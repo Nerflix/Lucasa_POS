@@ -1,9 +1,8 @@
-<<<<<<< HEAD
 # Lucasa POS - Point of Sale System
 
 A comprehensive Flutter-based Point of Sale system with offline-first architecture using SQLite for local operations and Supabase for cloud backup.
 
-## 🎯 Project Overview
+##  Project Overview
 
 Lucasa POS is a hybrid mobile application designed for retail operations, with specific support for:
 - **Car Sale** businesses
@@ -12,7 +11,7 @@ Lucasa POS is a hybrid mobile application designed for retail operations, with s
 - Offline-first operations
 - Automatic cloud backup
 
-## 🏗️ Architecture
+##  Architecture
 
 ### Hybrid Database System
 ```
@@ -43,7 +42,7 @@ Lucasa POS is a hybrid mobile application designed for retail operations, with s
 ### 1. Clone and Install Dependencies
 
 ```bash
-cd d:\Lucasa_POS\lucasa_pos
+navcigate to your prefered directory
 flutter pub get
 ```
 
@@ -57,7 +56,7 @@ dart run build_runner build --delete-conflicting-outputs
 
 #### A. Create Supabase Project
 1. Go to [https://supabase.com](https://supabase.com)
-2. Create a new project (already created: https://ofgjgslucmyizkbgtzaj.supabase.co)
+2. Create a new project
 
 #### B. Run SQL Schema
 1. Open Supabase SQL Editor
@@ -75,7 +74,6 @@ dart run build_runner build --delete-conflicting-outputs
 
 Supabase credentials are configured in:
 - `lib/core/config/supabase_config.dart`
-- URL: https://ofgjgslucmyizkbgtzaj.supabase.co
 - Keys: See config file
 
 ### 5. Run the Application
@@ -285,8 +283,4 @@ For questions or issues, contact the project administrator.
 ---
 
 Status: Core infrastructure complete - Ready for UI development
-
-=======
-# Lucasa_POS
-Lucasa POS is a cross-platform point-of-sale system designed for retail and small businesses. Built with Flutter, it supports Android, iOS, Windows, macOS, Linux, and web. The project integrates with Supabase for backend services, features robust location and sales management, and includes audit logging for security and compliance. 
 

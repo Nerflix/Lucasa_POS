@@ -1,21 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:drift/drift.dart' as drift;
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import '../../core/theme/app_theme.dart';
-import '../../data/models/location.dart';
-import '../../data/repositories/location_repository.dart';
+import '../../data/database/app_database.dart';
 import '../../services/auth_service.dart';
 import '../../services/logo_service.dart';
 import '../../services/connectivity_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:uuid/uuid.dart';
 
 class ConfigurationPage extends StatefulWidget {
   final bool openNewLocation;
 
-  const ConfigurationPage({super.key, this.openNewLocation = false});
+  const ConfigurationPage({
+    super.key,
+    this.openNewLocation = false,
+  });
 
   @override
   State<ConfigurationPage> createState() => _ConfigurationPageState();
@@ -31,10 +33,10 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
   final _emailController = TextEditingController();
   final _agoPumpsController = TextEditingController(text: '0');
   final _pmsPumpsController = TextEditingController(text: '0');
-
+  
   File? _selectedLogoFile;
   String? _currentLogoPath;
-
+  
   Location? _selectedLocation;
   List<Location> _locations = [];
   bool _isLoading = true;
@@ -69,21 +71,14 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
   Future<void> _loadLocations() async {
     setState(() => _isLoading = true);
-
-    final locationRepo = Provider.of<LocationRepository>(
-      context,
-      listen: false,
-    );
-    try {
-      final locations = await locationRepo.getAllLocations();
-      setState(() {
-        _locations = locations;
-        _isLoading = false;
-      });
-    } catch (e) {
-      debugPrint('Error loading locations: $e');
-      setState(() => _isLoading = false);
-    }
+    
+    final db = Provider.of<AppDatabase>(context, listen: false);
+    final locations = await db.getAllLocations();
+    
+    setState(() {
+      _locations = locations;
+      _isLoading = false;
+    });
   }
 
   void _loadLocationData(Location location) {
@@ -157,13 +152,13 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         Supabase.instance.client,
         Provider.of<ConnectivityService>(context, listen: false),
       );
-
+      
       final pickedFile = await logoService.pickLogo();
       if (pickedFile != null) {
         setState(() {
           _selectedLogoFile = File(pickedFile.path);
         });
-
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -217,31 +212,28 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
     setState(() => _isSaving = true);
 
-    final locationRepo = Provider.of<LocationRepository>(
-      context,
-      listen: false,
-    );
+    final db = Provider.of<AppDatabase>(context, listen: false);
     final logoService = LogoService(
       Supabase.instance.client,
       Provider.of<ConnectivityService>(context, listen: false),
     );
-
+    
     try {
       String? logoLocalPath = _currentLogoPath;
       String? logoUrl = _selectedLocation?.logoUrl;
-
-      final locationId = _selectedLocation?.id ?? const Uuid().v4();
-
+      
       // Handle logo upload if a new logo was selected
       if (_selectedLogoFile != null) {
         try {
           final xFile = XFile(_selectedLogoFile!.path);
-
+          final locationId = _selectedLocation?.id ?? 'loc_${DateTime.now().millisecondsSinceEpoch}';
+          
           final logoData = await logoService.saveLogoForLocation(
             locationId: locationId,
             imageFile: xFile,
+            db: db,
           );
-
+          
           if (logoData['localPath'] != null) {
             logoLocalPath = logoData['localPath'];
           }
@@ -253,83 +245,80 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
           print('Error saving logo: $logoError');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'Warning: Logo upload failed but location will be saved',
-                ),
+              SnackBar(
+                content: Text('Warning: Logo upload failed but location will be saved'),
                 backgroundColor: AppTheme.warning,
-                duration: Duration(seconds: 3),
+                duration: const Duration(seconds: 3),
               ),
             );
           }
         }
       }
-
-      final location =
-          (_selectedLocation ??
-                  Location(
-                    id: locationId,
-                    name: _nameController.text.trim(),
-                    agoPumps: int.tryParse(_agoPumpsController.text) ?? 0,
-                    pmsPumps: int.tryParse(_pmsPumpsController.text) ?? 0,
-                    isActive: true,
-                    createdAt: DateTime.now(),
-                  ))
-              .copyWith(
-                name: _nameController.text.trim(),
-                tillNumber: _tillNumberController.text.trim().isEmpty
-                    ? null
-                    : _tillNumberController.text.trim(),
-                paybillNumber: _paybillNumberController.text.trim().isEmpty
-                    ? null
-                    : _paybillNumberController.text.trim(),
-                address: _addressController.text.trim().isEmpty
-                    ? null
-                    : _addressController.text.trim(),
-                phone: _phoneController.text.trim().isEmpty
-                    ? null
-                    : _phoneController.text.trim(),
-                email: _emailController.text.trim().isEmpty
-                    ? null
-                    : _emailController.text.trim(),
-                logoLocalPath: logoLocalPath,
-                logoUrl: logoUrl,
-                agoPumps: int.tryParse(_agoPumpsController.text) ?? 0,
-                pmsPumps: int.tryParse(_pmsPumpsController.text) ?? 0,
-              );
-
-      await locationRepo.upsertLocation(location);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _selectedLocation == null
-                  ? 'Location created successfully'
-                  : 'Location updated successfully',
-            ),
-            backgroundColor: AppTheme.success,
-          ),
+      
+      if (_selectedLocation == null) {
+        // Create new location
+        final locationId = 'loc_${DateTime.now().millisecondsSinceEpoch}';
+        final location = LocationsCompanion.insert(
+          id: locationId,
+          name: _nameController.text.trim(),
+          tillNumber: drift.Value(_tillNumberController.text.trim().isEmpty ? null : _tillNumberController.text.trim()),
+          paybillNumber: drift.Value(_paybillNumberController.text.trim().isEmpty ? null : _paybillNumberController.text.trim()),
+          address: drift.Value(_addressController.text.trim().isEmpty ? null : _addressController.text.trim()),
+          phone: drift.Value(_phoneController.text.trim().isEmpty ? null : _phoneController.text.trim()),
+          email: drift.Value(_emailController.text.trim().isEmpty ? null : _emailController.text.trim()),
+          logoLocalPath: drift.Value(logoLocalPath),
+          logoUrl: drift.Value(logoUrl),
+          agoPumps: drift.Value(int.tryParse(_agoPumpsController.text) ?? 0),
+          pmsPumps: drift.Value(int.tryParse(_pmsPumpsController.text) ?? 0),
         );
+        
+        await db.insertLocation(location);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location created successfully'),
+              backgroundColor: AppTheme.success,
+            ),
+          );
+        }
+      } else {
+        // Update existing location
+        final location = LocationsCompanion(
+          id: drift.Value(_selectedLocation!.id),
+          name: drift.Value(_nameController.text.trim()),
+          tillNumber: drift.Value(_tillNumberController.text.trim().isEmpty ? null : _tillNumberController.text.trim()),
+          paybillNumber: drift.Value(_paybillNumberController.text.trim().isEmpty ? null : _paybillNumberController.text.trim()),
+          address: drift.Value(_addressController.text.trim().isEmpty ? null : _addressController.text.trim()),
+          phone: drift.Value(_phoneController.text.trim().isEmpty ? null : _phoneController.text.trim()),
+          email: drift.Value(_emailController.text.trim().isEmpty ? null : _emailController.text.trim()),
+          logoLocalPath: drift.Value(logoLocalPath),
+          logoUrl: drift.Value(logoUrl),
+          agoPumps: drift.Value(int.tryParse(_agoPumpsController.text) ?? 0),
+          pmsPumps: drift.Value(int.tryParse(_pmsPumpsController.text) ?? 0),
+        );
+        
+        await db.updateLocation(_selectedLocation!.id, location);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Location updated successfully'),
+              backgroundColor: AppTheme.success,
+            ),
+          );
+        }
       }
-
+      
       _clearForm();
       await _loadLocations();
     } catch (e) {
       print('Save location error: $e'); // Log for debugging
       if (mounted) {
-        String errorMessage = 'Unable to save location. Please try again.';
-        if (e is PostgrestException) {
-          errorMessage = 'Database error: ${e.message}';
-        } else {
-          errorMessage = 'Error: $e';
-        }
-
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errorMessage),
+          const SnackBar(
+            content: Text('Unable to save location. Please try again.'),
             backgroundColor: AppTheme.error,
-            duration: const Duration(seconds: 5),
           ),
         );
       }
@@ -357,7 +346,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
         title: const Text('Delete Location'),
         content: Text(
           'Are you sure you want to delete "${location.name}"?\n\n'
-          'This will also delete the location record from the server.',
+          'This will also delete all related data including items, sales, and receivings for this location.',
         ),
         actions: [
           TextButton(
@@ -366,7 +355,9 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.error,
+            ),
             child: const Text('Delete'),
           ),
         ],
@@ -375,12 +366,9 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
 
     if (confirmed == true && mounted) {
       try {
-        final locationRepo = Provider.of<LocationRepository>(
-          context,
-          listen: false,
-        );
-        await locationRepo.deleteLocation(location.id);
-
+        final db = Provider.of<AppDatabase>(context, listen: false);
+        await db.deleteLocation(location.id);
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -388,29 +376,21 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
               backgroundColor: AppTheme.success,
             ),
           );
-
+          
           // Clear form if this was the selected location
           if (_selectedLocation?.id == location.id) {
             _clearForm();
           }
-
+          
           await _loadLocations();
         }
       } catch (e) {
         print('Delete location error: $e'); // Log for debugging
         if (mounted) {
-          String errorMessage = 'Unable to delete location. Please try again.';
-          if (e is PostgrestException) {
-            errorMessage = 'Database error: ${e.message}';
-          } else {
-            errorMessage = 'Error: $e';
-          }
-
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(errorMessage),
+            const SnackBar(
+              content: Text('Unable to delete location. Please try again.'),
               backgroundColor: AppTheme.error,
-              duration: const Duration(seconds: 5),
             ),
           );
         }
@@ -429,8 +409,8 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : isTablet
-          ? _buildTabletLayout(canCreateLocation)
-          : _buildMobileLayout(canCreateLocation),
+              ? _buildTabletLayout(canCreateLocation)
+              : _buildMobileLayout(canCreateLocation),
     );
   }
 
@@ -439,10 +419,15 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     return Row(
       children: [
         // Left side - Locations list
-        SizedBox(width: 300, child: _buildLocationsList(canCreateLocation)),
-
+        SizedBox(
+          width: 300,
+          child: _buildLocationsList(canCreateLocation),
+        ),
+        
         // Right side - Location form
-        Expanded(child: _buildLocationForm()),
+        Expanded(
+          child: _buildLocationForm(),
+        ),
       ],
     );
   }
@@ -469,14 +454,14 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
               children: [
                 const Text(
                   'Locations',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 if (canCreateLocation)
                   IconButton(
-                    icon: const Icon(
-                      Icons.add_circle,
-                      color: AppTheme.primaryOrange,
-                    ),
+                    icon: const Icon(Icons.add_circle, color: AppTheme.primaryOrange),
                     onPressed: _clearForm,
                     tooltip: 'New Location',
                   ),
@@ -518,7 +503,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                     itemBuilder: (context, index) {
                       final location = _locations[index];
                       final isSelected = _selectedLocation?.id == location.id;
-
+                      
                       return Card(
                         margin: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -526,21 +511,15 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                         ),
                         child: ListTile(
                           selected: isSelected,
-                          selectedTileColor: AppTheme.primaryOrange.withOpacity(
-                            0.1,
-                          ),
+                          selectedTileColor: AppTheme.primaryOrange.withOpacity(0.1),
                           leading: Icon(
                             Icons.location_on,
-                            color: isSelected
-                                ? AppTheme.primaryOrange
-                                : AppTheme.darkGray,
+                            color: isSelected ? AppTheme.primaryOrange : AppTheme.darkGray,
                           ),
                           title: Text(
                             location.name,
                             style: TextStyle(
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.normal,
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                             ),
                           ),
                           subtitle: Column(
@@ -548,20 +527,17 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                             children: [
                               if (location.address != null)
                                 Text(location.address!),
-                              if (location.phone != null) Text(location.phone!),
+                              if (location.phone != null)
+                                Text(location.phone!),
                             ],
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                icon: const Icon(
-                                  Icons.delete,
-                                  color: AppTheme.error,
-                                ),
+                                icon: const Icon(Icons.delete, color: AppTheme.error),
                                 tooltip: 'Delete Location',
-                                onPressed: () =>
-                                    _confirmDeleteLocation(location),
+                                onPressed: () => _confirmDeleteLocation(location),
                               ),
                               const Icon(Icons.chevron_right),
                             ],
@@ -590,7 +566,9 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: const BoxDecoration(
-                border: Border(bottom: BorderSide(color: AppTheme.mediumGray)),
+                border: Border(
+                  bottom: BorderSide(color: AppTheme.mediumGray),
+                ),
               ),
               child: Row(
                 children: [
@@ -600,9 +578,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _selectedLocation == null
-                        ? 'New Location'
-                        : 'Edit Location',
+                    _selectedLocation == null ? 'New Location' : 'Edit Location',
                     style: const TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -611,7 +587,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                 ],
               ),
             ),
-
+          
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.all(24.0),
@@ -622,252 +598,238 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                   children: [
                     if (!isMobile)
                       Text(
-                        _selectedLocation == null
-                            ? 'New Location'
-                            : 'Edit Location',
+                        _selectedLocation == null ? 'New Location' : 'Edit Location',
                         style: const TextStyle(
                           fontSize: 24,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
                     if (!isMobile) const SizedBox(height: 24),
-                    Text(
-                      _selectedLocation == null
-                          ? 'New Location'
-                          : 'Edit Location',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Shop Name
-                    TextFormField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Shop Name',
-                        hintText: 'Enter shop name',
-                        prefixIcon: Icon(Icons.store),
-                      ),
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'Shop name is required';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Logo Upload
-                    const Text(
-                      'Shop Logo',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      height: 150,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: AppTheme.lightGray),
-                        borderRadius: BorderRadius.circular(8),
-                        color: AppTheme.lightGray.withOpacity(0.1),
-                      ),
-                      child: _selectedLogoFile != null
-                          ? Stack(
-                              alignment: Alignment.topRight,
-                              children: [
-                                Center(
-                                  child: Image.file(
-                                    _selectedLogoFile!,
-                                    height: 140,
-                                    fit: BoxFit.contain,
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.close,
-                                    color: AppTheme.error,
-                                  ),
-                                  onPressed: () {
-                                    setState(() {
-                                      _selectedLogoFile = null;
-                                    });
-                                  },
-                                ),
-                              ],
-                            )
-                          : _currentLogoPath != null
-                          ? Stack(
-                              alignment: Alignment.topRight,
-                              children: [
-                                Center(
-                                  child: Image.file(
-                                    File(_currentLogoPath!),
-                                    height: 140,
-                                    fit: BoxFit.contain,
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.close,
-                                    color: AppTheme.error,
-                                  ),
-                                  onPressed: () {
-                                    setState(() {
-                                      _currentLogoPath = null;
-                                    });
-                                  },
-                                ),
-                              ],
-                            )
-                          : Center(
-                              child: TextButton.icon(
-                                onPressed: _pickLogo,
-                                icon: const Icon(Icons.image),
-                                label: const Text('Choose Logo'),
+                            Text(
+                              _selectedLocation == null ? 'New Location' : 'Edit Location',
+                              style: const TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Logo will be used on receipts. Recommended size: 512x512 pixels',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppTheme.darkGray.withOpacity(0.7),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Till Number
-                    TextFormField(
-                      controller: _tillNumberController,
-                      decoration: const InputDecoration(
-                        labelText: 'Till Number (Mpesa)',
-                        hintText: 'Enter till number',
-                        prefixIcon: Icon(Icons.payment),
-                      ),
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Paybill Number
-                    TextFormField(
-                      controller: _paybillNumberController,
-                      decoration: const InputDecoration(
-                        labelText: 'Paybill Number (Equity)',
-                        hintText: 'Enter paybill number',
-                        prefixIcon: Icon(Icons.account_balance),
-                      ),
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Address
-                    TextFormField(
-                      controller: _addressController,
-                      decoration: const InputDecoration(
-                        labelText: 'Location/Address',
-                        hintText: 'Enter address',
-                        prefixIcon: Icon(Icons.location_on),
-                      ),
-                      maxLines: 2,
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Phone
-                    TextFormField(
-                      controller: _phoneController,
-                      decoration: const InputDecoration(
-                        labelText: 'Phone Number',
-                        hintText: 'Enter phone number',
-                        prefixIcon: Icon(Icons.phone),
-                      ),
-                      keyboardType: TextInputType.phone,
-                    ),
-                    const SizedBox(height: 16),
-
-                    // Email
-                    TextFormField(
-                      controller: _emailController,
-                      decoration: const InputDecoration(
-                        labelText: 'Email',
-                        hintText: 'Enter email',
-                        prefixIcon: Icon(Icons.email),
-                      ),
-                      keyboardType: TextInputType.emailAddress,
-                    ),
-                    const SizedBox(height: 24),
-
-                    // Pump Setup Section
-                    const Text(
-                      'Pump Setup (Filling Station)',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            controller: _agoPumpsController,
-                            decoration: const InputDecoration(
-                              labelText: 'AGO Pumps',
-                              hintText: '0',
-                              prefixIcon: Icon(Icons.local_gas_station),
+                            const SizedBox(height: 24),
+                            
+                            // Shop Name
+                            TextFormField(
+                              controller: _nameController,
+                              decoration: const InputDecoration(
+                                labelText: 'Shop Name',
+                                hintText: 'Enter shop name',
+                                prefixIcon: Icon(Icons.store),
+                              ),
+                              validator: (value) {
+                                if (value == null || value.trim().isEmpty) {
+                                  return 'Shop name is required';
+                                }
+                                return null;
+                              },
                             ),
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                            ],
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Required';
-                              }
-                              final num = int.tryParse(value);
-                              if (num == null || num < 0) {
-                                return 'Invalid number';
-                              }
-                              return null;
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _pmsPumpsController,
-                            decoration: const InputDecoration(
-                              labelText: 'PMS Pumps',
-                              hintText: '0',
-                              prefixIcon: Icon(Icons.local_gas_station),
+                            const SizedBox(height: 16),
+                            
+                            // Logo Upload
+                            const Text(
+                              'Shop Logo',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                            ],
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return 'Required';
-                              }
-                              final num = int.tryParse(value);
-                              if (num == null || num < 0) {
-                                return 'Invalid number';
-                              }
-                              return null;
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 32),
-
+                            const SizedBox(height: 8),
+                            Container(
+                              height: 150,
+                              decoration: BoxDecoration(
+                                border: Border.all(color: AppTheme.lightGray),
+                                borderRadius: BorderRadius.circular(8),
+                                color: AppTheme.lightGray.withOpacity(0.1),
+                              ),
+                              child: _selectedLogoFile != null
+                                  ? Stack(
+                                      alignment: Alignment.topRight,
+                                      children: [
+                                        Center(
+                                          child: Image.file(
+                                            _selectedLogoFile!,
+                                            height: 140,
+                                            fit: BoxFit.contain,
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.close, color: AppTheme.error),
+                                          onPressed: () {
+                                            setState(() {
+                                              _selectedLogoFile = null;
+                                            });
+                                          },
+                                        ),
+                                      ],
+                                    )
+                                  : _currentLogoPath != null
+                                      ? Stack(
+                                          alignment: Alignment.topRight,
+                                          children: [
+                                            Center(
+                                              child: Image.file(
+                                                File(_currentLogoPath!),
+                                                height: 140,
+                                                fit: BoxFit.contain,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(Icons.close, color: AppTheme.error),
+                                              onPressed: () {
+                                                setState(() {
+                                                  _currentLogoPath = null;
+                                                });
+                                              },
+                                            ),
+                                          ],
+                                        )
+                                      : Center(
+                                          child: TextButton.icon(
+                                            onPressed: _pickLogo,
+                                            icon: const Icon(Icons.image),
+                                            label: const Text('Choose Logo'),
+                                          ),
+                                        ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Logo will be used on receipts. Recommended size: 512x512 pixels',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppTheme.darkGray.withOpacity(0.7),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Till Number
+                            TextFormField(
+                              controller: _tillNumberController,
+                              decoration: const InputDecoration(
+                                labelText: 'Till Number (Mpesa)',
+                                hintText: 'Enter till number',
+                                prefixIcon: Icon(Icons.payment),
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Paybill Number
+                            TextFormField(
+                              controller: _paybillNumberController,
+                              decoration: const InputDecoration(
+                                labelText: 'Paybill Number (Equity)',
+                                hintText: 'Enter paybill number',
+                                prefixIcon: Icon(Icons.account_balance),
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Address
+                            TextFormField(
+                              controller: _addressController,
+                              decoration: const InputDecoration(
+                                labelText: 'Location/Address',
+                                hintText: 'Enter address',
+                                prefixIcon: Icon(Icons.location_on),
+                              ),
+                              maxLines: 2,
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Phone
+                            TextFormField(
+                              controller: _phoneController,
+                              decoration: const InputDecoration(
+                                labelText: 'Phone Number',
+                                hintText: 'Enter phone number',
+                                prefixIcon: Icon(Icons.phone),
+                              ),
+                              keyboardType: TextInputType.phone,
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            // Email
+                            TextFormField(
+                              controller: _emailController,
+                              decoration: const InputDecoration(
+                                labelText: 'Email',
+                                hintText: 'Enter email',
+                                prefixIcon: Icon(Icons.email),
+                              ),
+                              keyboardType: TextInputType.emailAddress,
+                            ),
+                            const SizedBox(height: 24),
+                            
+                            // Pump Setup Section
+                            const Text(
+                              'Pump Setup (Filling Station)',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _agoPumpsController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'AGO Pumps',
+                                      hintText: '0',
+                                      prefixIcon: Icon(Icons.local_gas_station),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                    validator: (value) {
+                                      if (value == null || value.isEmpty) {
+                                        return 'Required';
+                                      }
+                                      final num = int.tryParse(value);
+                                      if (num == null || num < 0) {
+                                        return 'Invalid number';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _pmsPumpsController,
+                                    decoration: const InputDecoration(
+                                      labelText: 'PMS Pumps',
+                                      hintText: '0',
+                                      prefixIcon: Icon(Icons.local_gas_station),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                    validator: (value) {
+                                      if (value == null || value.isEmpty) {
+                                        return 'Required';
+                                      }
+                                      final num = int.tryParse(value);
+                                      if (num == null || num < 0) {
+                                        return 'Invalid number';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 32),
+                            
                     // Save Button
                     const SizedBox(height: 24),
                     SizedBox(
@@ -886,11 +848,7 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
                                 ),
                               )
                             : const Icon(Icons.save),
-                        label: Text(
-                          _selectedLocation == null
-                              ? 'Create Location'
-                              : 'Update Location',
-                        ),
+                        label: Text(_selectedLocation == null ? 'Create Location' : 'Update Location'),
                       ),
                     ),
                     SizedBox(
@@ -919,3 +877,4 @@ class _ConfigurationPageState extends State<ConfigurationPage> {
     );
   }
 }
+

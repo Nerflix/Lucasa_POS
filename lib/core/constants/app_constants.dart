@@ -46,7 +46,6 @@ class AppConstants {
   
   // Hard-coded Super Admin credentials (not stored in database)
   static const String superAdminUsername = 'superadmin';
-  // This is the SHA256 hash of 'SuperAdmin@2026!'.
-  static const String superAdminPasswordHash = 'd5d9bdd777d6e8e320a6bf4973ba7dd331ff0bbb7e3fc791782ff3325db101eb';
+  static const String superAdminPassword = 'SuperAdmin@2026!';
   static const String superAdminEmail = 'superadmin@lucasa.pos';
 }

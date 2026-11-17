@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/connectivity_service.dart';
-import '../../data/repositories/auth_repository.dart';
-import '../../data/repositories/employee_repository.dart';
-import '../../data/repositories/reports_repository.dart';
+import '../../services/sync_service.dart';
+import '../../data/database/app_database.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
 import '../auth/login_page.dart';
@@ -20,12 +19,14 @@ import '../credits/credits_page.dart';
 import '../suspended_sales/suspended_sales_page.dart';
 import '../../widgets/overdue_credits_banner.dart';
 import '../../widgets/alerts_bell_icon.dart';
-import '../../widgets/sync_indicator.dart';
 
 class MainDashboard extends StatefulWidget {
   final String selectedCategory;
-
-  const MainDashboard({super.key, required this.selectedCategory});
+  
+  const MainDashboard({
+    super.key,
+    required this.selectedCategory,
+  });
 
   @override
   State<MainDashboard> createState() => _MainDashboardState();
@@ -36,17 +37,13 @@ class _MainDashboardState extends State<MainDashboard> {
   int _selectedIndex = 0;
   DateTime? _lastBackPress;
   bool _openNewLocation = false;
-  String? _resumeSaleId;
 
   @override
   void initState() {
     super.initState();
     _currentCategory = widget.selectedCategory;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<AuthService>(
-        context,
-        listen: false,
-      ).setCategory(_currentCategory);
+      Provider.of<AuthService>(context, listen: false).setCategory(_currentCategory);
     });
   }
 
@@ -54,9 +51,6 @@ class _MainDashboardState extends State<MainDashboard> {
     setState(() {
       _selectedIndex = index;
       _openNewLocation = false;
-      if (index != 0) {
-        _resumeSaleId = null;
-      }
     });
   }
 
@@ -67,9 +61,39 @@ class _MainDashboardState extends State<MainDashboard> {
     });
   }
 
+  Future<void> _handlePullToSync(
+    SyncService syncService,
+    ConnectivityService connectivityService,
+  ) async {
+    final isOnline = connectivityService.hasConnection;
+    if (!isOnline) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No internet connection. Connect to WiFi or mobile data to sync.'),
+            backgroundColor: AppTheme.warning,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
+
+    final result = await syncService.syncNow(reason: 'Pull to refresh');
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor: result.success ? AppTheme.success : AppTheme.error,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   Widget _getCurrentPage() {
     final authService = Provider.of<AuthService>(context, listen: false);
-
+    
     // For Super Admin and Admin - different pages
     if (authService.isSuperAdmin || authService.isAdmin) {
       switch (_selectedIndex) {
@@ -88,14 +112,11 @@ class _MainDashboardState extends State<MainDashboard> {
           return _buildDashboardHome();
       }
     }
-
+    
     // For Employee - operational pages
     switch (_selectedIndex) {
       case 0:
-        return SalesPage(
-          key: ValueKey('sales_$_resumeSaleId'),
-          resumeSaleId: _resumeSaleId,
-        );
+        return const SalesPage();
       case 1:
         return const ItemsPage();
       case 2:
@@ -105,36 +126,18 @@ class _MainDashboardState extends State<MainDashboard> {
       case 4:
         return const CreditsPage();
       case 5:
-        return SuspendedSalesPage(
-          onResume: (saleId) {
-            setState(() {
-              _resumeSaleId = saleId;
-              _selectedIndex = 0;
-            });
-          },
-        );
+        return const SuspendedSalesPage();
       default:
-        return SalesPage(
-          key: ValueKey('sales_$_resumeSaleId'),
-          resumeSaleId: _resumeSaleId,
-        );
+        return const SalesPage();
     }
   }
 
   Widget _buildDashboardHome() {
     final authService = Provider.of<AuthService>(context);
-    final authRepository = Provider.of<AuthRepository>(context, listen: false);
-    final employeeRepository = Provider.of<EmployeeRepository>(
-      context,
-      listen: false,
-    );
-    final reportsRepository = Provider.of<ReportsRepository>(
-      context,
-      listen: false,
-    );
+    final db = Provider.of<AppDatabase>(context, listen: false);
     final screenWidth = MediaQuery.of(context).size.width;
     final crossAxisCount = screenWidth > 600 ? 4 : 2;
-
+    
     return Scaffold(
       body: SingleChildScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -152,26 +155,24 @@ class _MainDashboardState extends State<MainDashboard> {
             ),
             const SizedBox(height: 8),
             Text(
-              authService.isSuperAdmin
-                  ? 'Super Administrator'
-                  : 'Administrator',
-              style: const TextStyle(fontSize: 16, color: AppTheme.darkGray),
+              authService.isSuperAdmin ? 'Super Administrator' : 'Administrator',
+              style: const TextStyle(
+                fontSize: 16,
+                color: AppTheme.darkGray,
+              ),
             ),
             const SizedBox(height: 32),
-
+            
             // Quick Stats Cards
             FutureBuilder<Map<String, dynamic>>(
-              future: _loadDashboardStats(
-                authRepository,
-                employeeRepository,
-                reportsRepository,
-                _currentCategory,
-              ),
+              future: _loadDashboardStats(db, _currentCategory),
               builder: (context, snapshot) {
-                final stats =
-                    snapshot.data ??
-                    {'locations': 0, 'employees': 0, 'totalSales': 0.0};
-
+                final stats = snapshot.data ?? {
+                  'locations': 0,
+                  'employees': 0,
+                  'totalSales': 0.0,
+                };
+                
                 return GridView.count(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -238,28 +239,26 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   Future<Map<String, dynamic>> _loadDashboardStats(
-    AuthRepository authRepo,
-    EmployeeRepository employeeRepo,
-    ReportsRepository reportsRepo,
+    AppDatabase db,
     String category,
   ) async {
-    final locations = await authRepo.getActiveLocations();
-    final employees = await employeeRepo.getAllEmployees();
-
-    final locationIds = locations.map((e) => e.id).toList();
+    final locations = await db.getAllLocations();
+    final employees = await db.getAllEmployees();
+    
+    // Get all sales by querying all locations
     double totalSales = 0.0;
-
-    if (locationIds.isNotEmpty) {
-      final now = DateTime.now();
-      final stats = await reportsRepo.getSalesStats(
-        locationIds: locationIds,
-        category: category,
-        startDate: DateTime(now.year, now.month, 1), // Month to date
-        endDate: now,
+    for (final location in locations) {
+      final locationSales = await db.getSalesByLocationAndCategory(
+        location.id,
+        category,
       );
-      totalSales = stats['totalSales'] as double;
+      for (final sale in locationSales) {
+        if (!sale.isSuspended) {
+          totalSales += sale.totalAmount;
+        }
+      }
     }
-
+    
     return {
       'locations': locations.length,
       'employees': employees.length,
@@ -267,13 +266,7 @@ class _MainDashboardState extends State<MainDashboard> {
     };
   }
 
-  Widget _buildStatCard(
-    String title,
-    String value,
-    IconData icon,
-    Color color, {
-    VoidCallback? onTap,
-  }) {
+  Widget _buildStatCard(String title, String value, IconData icon, Color color, {VoidCallback? onTap}) {
     return Card(
       elevation: 2,
       child: InkWell(
@@ -297,7 +290,10 @@ class _MainDashboardState extends State<MainDashboard> {
               const SizedBox(height: 4),
               Text(
                 title,
-                style: const TextStyle(fontSize: 14, color: AppTheme.darkGray),
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: AppTheme.darkGray,
+                ),
               ),
             ],
           ),
@@ -314,12 +310,13 @@ class _MainDashboardState extends State<MainDashboard> {
   Widget build(BuildContext context) {
     final authService = Provider.of<AuthService>(context);
     final connectivityService = Provider.of<ConnectivityService>(context);
+    final syncService = Provider.of<SyncService>(context);
 
     return PopScope(
       canPop: false,
       onPopInvoked: (bool didPop) async {
         if (didPop) return;
-
+        
         // If not on home page (index 0), navigate back to home
         if (_selectedIndex != 0) {
           setState(() {
@@ -327,13 +324,12 @@ class _MainDashboardState extends State<MainDashboard> {
           });
           return;
         }
-
+        
         // On home page - show "press again to exit" behavior
         final now = DateTime.now();
-        final backButtonHasTwoSecondsPassed =
-            _lastBackPress == null ||
+        final backButtonHasTwoSecondsPassed = _lastBackPress == null ||
             now.difference(_lastBackPress!) > const Duration(seconds: 2);
-
+            
         if (backButtonHasTwoSecondsPassed) {
           _lastBackPress = now;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -345,58 +341,93 @@ class _MainDashboardState extends State<MainDashboard> {
           );
           return;
         }
-
+        
         // Exit the app
         Navigator.of(context).pop();
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: Text(authService.isEmployee ? _currentCategory : 'Lucasa POS'),
-          actions: [
-            // Category toggle for employees
-            if (authService.isEmployee)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                      value: AppConstants.categoryFillingStation,
-                      label: Text('Filling Station'),
-                      icon: Icon(Icons.local_gas_station, size: 16),
-                    ),
-                    ButtonSegment(
-                      value: AppConstants.categoryCarSale,
-                      label: Text('Car Sale'),
-                      icon: Icon(Icons.shopping_cart, size: 16),
-                    ),
-                  ],
-                  selected: {_currentCategory},
-                  onSelectionChanged: (Set<String> selection) {
-                    setState(() {
-                      _currentCategory = selection.first;
-                      authService.setCategory(_currentCategory);
-                      _resumeSaleId = null;
-                    });
-                  },
-                ),
-              ),
-
-            // Alerts notification bell
-            const AlertsBellIcon(),
-
-            // Sync status icon
-            StreamBuilder<bool>(
-              stream: connectivityService.connectionStatus,
-              builder: (context, snapshot) {
-                final isOnline =
-                    snapshot.data ?? connectivityService.hasConnection;
-                return SyncIndicator(isOnline: isOnline);
-              },
-            ),
-          ],
+      appBar: AppBar(
+        title: Text(
+          authService.isEmployee 
+              ? _currentCategory 
+              : 'Lucasa POS',
         ),
-        drawer: _buildDrawer(context, authService),
-        body: Column(
+        actions: [
+          // Category toggle for employees
+          if (authService.isEmployee)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: AppConstants.categoryFillingStation,
+                    label: Text('Filling Station'),
+                    icon: Icon(Icons.local_gas_station, size: 16),
+                  ),
+                  ButtonSegment(
+                    value: AppConstants.categoryCarSale,
+                    label: Text('Car Sale'),
+                    icon: Icon(Icons.shopping_cart, size: 16),
+                  ),
+                ],
+                selected: {_currentCategory},
+                onSelectionChanged: (Set<String> selection) {
+                  setState(() {
+                    _currentCategory = selection.first;
+                    authService.setCategory(_currentCategory);
+                  });
+                },
+              ),
+            ),
+          
+          // Alerts notification bell
+          const AlertsBellIcon(),
+
+          // Sync status icon
+          StreamBuilder<bool>(
+            stream: connectivityService.connectionStatus,
+            builder: (context, snapshot) {
+              final isOnline = snapshot.data ?? connectivityService.hasConnection;
+              return IconButton(
+                icon: Icon(
+                  isOnline ? Icons.cloud_done : Icons.cloud_off,
+                  color: isOnline ? AppTheme.success : AppTheme.error,
+                ),
+                onPressed: () async {
+                  if (isOnline) {
+                    // Manual sync
+                    final result = await syncService.syncNow();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(result.message),
+                          backgroundColor: result.success ? AppTheme.success : AppTheme.error,
+                          duration: const Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  } else {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('No internet connection. Connect to WiFi or mobile data to sync.'),
+                          backgroundColor: AppTheme.warning,
+                          duration: Duration(seconds: 3),
+                        ),
+                      );
+                    }
+                  }
+                },
+                tooltip: isOnline ? 'Tap to sync' : 'Offline',
+              );
+            },
+          ),
+        ],
+      ),
+      drawer: _buildDrawer(context, authService),
+      body: RefreshIndicator(
+        onRefresh: () => _handlePullToSync(syncService, connectivityService),
+        child: Column(
           children: [
             OverdueCreditsBanner(
               category: authService.isEmployee ? _currentCategory : null,
@@ -408,12 +439,12 @@ class _MainDashboardState extends State<MainDashboard> {
           ],
         ),
       ),
+      ),
     );
   }
 
   Drawer _buildDrawer(BuildContext context, AuthService authService) {
-    final switchToCategory =
-        _currentCategory == AppConstants.categoryFillingStation
+    final switchToCategory = _currentCategory == AppConstants.categoryFillingStation
         ? AppConstants.categoryCarSale
         : AppConstants.categoryFillingStation;
     final switchIcon = _currentCategory == AppConstants.categoryFillingStation
@@ -472,7 +503,7 @@ class _MainDashboardState extends State<MainDashboard> {
               ),
             ),
           ),
-
+          
           // Menu items based on role
           if (authService.isSuperAdmin || authService.isAdmin) ...[
             _buildDrawerItem(
@@ -487,7 +518,12 @@ class _MainDashboardState extends State<MainDashboard> {
               1,
               _selectedIndex == 1,
             ),
-            _buildDrawerItem(Icons.people, 'Employees', 2, _selectedIndex == 2),
+            _buildDrawerItem(
+              Icons.people,
+              'Employees',
+              2,
+              _selectedIndex == 2,
+            ),
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
@@ -500,10 +536,7 @@ class _MainDashboardState extends State<MainDashboard> {
               ),
             ),
             ListTile(
-              leading: const Icon(
-                Icons.person_add,
-                color: AppTheme.primaryOrange,
-              ),
+              leading: const Icon(Icons.person_add, color: AppTheme.primaryOrange),
               title: const Text('Add Employee/Admin'),
               onTap: () {
                 Navigator.of(context).pop();
@@ -512,10 +545,7 @@ class _MainDashboardState extends State<MainDashboard> {
             ),
             if (authService.hasPermission('canManageLocations'))
               ListTile(
-                leading: const Icon(
-                  Icons.add_location,
-                  color: AppTheme.primaryOrange,
-                ),
+                leading: const Icon(Icons.add_location, color: AppTheme.primaryOrange),
                 title: const Text('Add Location'),
                 onTap: () {
                   Navigator.of(context).pop();
@@ -538,7 +568,6 @@ class _MainDashboardState extends State<MainDashboard> {
                 setState(() {
                   _currentCategory = switchToCategory;
                   _selectedIndex = 0;
-                  _resumeSaleId = null;
                 });
                 authService.setCategory(_currentCategory);
               },
@@ -549,7 +578,12 @@ class _MainDashboardState extends State<MainDashboard> {
               0,
               _selectedIndex == 0,
             ),
-            _buildDrawerItem(Icons.inventory, 'Items', 1, _selectedIndex == 1),
+            _buildDrawerItem(
+              Icons.inventory,
+              'Items',
+              1,
+              _selectedIndex == 1,
+            ),
             _buildDrawerItem(
               Icons.local_shipping,
               'Receivings',
@@ -575,15 +609,12 @@ class _MainDashboardState extends State<MainDashboard> {
               _selectedIndex == 5,
             ),
           ],
-
+          
           const Divider(),
-
+          
           // Change Password
           ListTile(
-            leading: const Icon(
-              Icons.lock_outline,
-              color: AppTheme.primaryOrange,
-            ),
+            leading: const Icon(Icons.lock_outline, color: AppTheme.primaryOrange),
             title: const Text('Change Password'),
             onTap: () {
               Navigator.of(context).pop();
@@ -593,7 +624,7 @@ class _MainDashboardState extends State<MainDashboard> {
               );
             },
           ),
-
+          
           // Logout
           ListTile(
             leading: const Icon(Icons.logout, color: AppTheme.error),
@@ -613,12 +644,7 @@ class _MainDashboardState extends State<MainDashboard> {
     );
   }
 
-  Widget _buildDrawerItem(
-    IconData icon,
-    String title,
-    int index,
-    bool isSelected,
-  ) {
+  Widget _buildDrawerItem(IconData icon, String title, int index, bool isSelected) {
     return ListTile(
       leading: Icon(
         icon,

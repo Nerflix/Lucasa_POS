@@ -16,6 +16,8 @@ migrate_working_dir/
 /task.md
 /env/
 .env
+.env.*
+!.env.example
 
 # IntelliJ related
 *.iml
@@ -37,15 +39,6 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
-
-# Environment variables
-.env
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
 
 # Android Studio will place build artifacts here
 /android/app/debug

@@ -1,18 +1,19 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:fluttertoast/fluttertoast.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/app_constants.dart';
-import '../../core/utils/validation_utils.dart';
-import '../../data/models/location.dart';
-import '../../data/repositories/location_repository.dart';
+import '../../data/database/app_database.dart';
 import '../../services/auth_service.dart';
-import '../../core/utils/toast_utils.dart';
 
 class AddEmployeeDialog extends StatefulWidget {
   final VoidCallback onEmployeeAdded;
-
-  const AddEmployeeDialog({super.key, required this.onEmployeeAdded});
+  
+  const AddEmployeeDialog({
+    super.key,
+    required this.onEmployeeAdded,
+  });
 
   @override
   State<AddEmployeeDialog> createState() => _AddEmployeeDialogState();
@@ -27,7 +28,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
   final _emailController = TextEditingController();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
-
+  
   String _selectedRole = AppConstants.roleEmployee;
   Location? _selectedLocation;
   List<Location> _selectedLocations = []; // For admins
@@ -54,12 +55,9 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
   }
 
   Future<void> _loadLocations() async {
-    final locationRepo = Provider.of<LocationRepository>(
-      context,
-      listen: false,
-    );
-    final locations = await locationRepo.getAllLocations();
-
+    final db = Provider.of<AppDatabase>(context, listen: false);
+    final locations = await db.getAllLocations();
+    
     setState(() {
       _locations = locations;
       if (locations.isNotEmpty) {
@@ -75,13 +73,14 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
 
     final authService = Provider.of<AuthService>(context, listen: false);
     final isCreatingAdmin = _selectedRole == AppConstants.roleAdmin;
-    final requiredPermission = isCreatingAdmin
-        ? 'canManageAdmins'
-        : 'canManageEmployees';
-
+    final requiredPermission = isCreatingAdmin ? 'canManageAdmins' : 'canManageEmployees';
+    
     if (!authService.hasPermission(requiredPermission)) {
-      ToastUtils.showError(
-        'You do not have permission to create ${isCreatingAdmin ? "admins" : "employees"}',
+      Fluttertoast.showToast(
+        msg: 'You do not have permission to create ${isCreatingAdmin ? "admins" : "employees"}',
+        gravity: ToastGravity.TOP,
+        backgroundColor: AppTheme.error,
+        textColor: Colors.white,
       );
       setState(() => _isSaving = false);
       return;
@@ -89,67 +88,66 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
 
     if (_selectedRole == AppConstants.roleAdmin) {
       if (_selectedLocations.isEmpty) {
-        ToastUtils.showError('Admin must be assigned to at least one location');
+        Fluttertoast.showToast(
+          msg: 'Admin must be assigned to at least one location',
+          gravity: ToastGravity.TOP,
+          backgroundColor: AppTheme.error,
+          textColor: Colors.white,
+        );
         return;
       }
     } else {
       if (_selectedLocation == null) {
-        ToastUtils.showError('Please select a location');
+        Fluttertoast.showToast(
+          msg: 'Please select a location',
+          gravity: ToastGravity.TOP,
+          backgroundColor: AppTheme.error,
+          textColor: Colors.white,
+        );
         return;
       }
     }
 
     setState(() => _isSaving = true);
+    
+    String locationIdValue;
+    if (_selectedRole == AppConstants.roleAdmin && _selectedLocations.isNotEmpty) {
+      final locationIds = _selectedLocations.map((loc) => loc.id).toList();
+      locationIdValue = jsonEncode(locationIds);
+    } else {
+      locationIdValue = _selectedLocation!.id;
+    }
+    
+    final result = await authService.createEmployee(
+      firstName: _firstNameController.text.trim(),
+      middleName: _middleNameController.text.trim().isEmpty 
+          ? null 
+          : _middleNameController.text.trim(),
+      surname: _surnameController.text.trim(),
+      phone: _phoneController.text.trim(),
+      email: _emailController.text.trim(),
+      username: _usernameController.text.trim(),
+      password: _passwordController.text,
+      role: _selectedRole,
+      locationId: locationIdValue,
+      permissions: null, // TODO: Implement permissions selection
+    );
 
-    try {
-      String locationIdValue;
-      if (_selectedRole == AppConstants.roleAdmin &&
-          _selectedLocations.isNotEmpty) {
-        final locationIds = _selectedLocations.map((loc) => loc.id).toList();
-        locationIdValue = jsonEncode(locationIds);
-      } else {
-        locationIdValue = _selectedLocation!.id;
-      }
+    setState(() => _isSaving = false);
 
-      // Define permissions based on role
-      Map<String, bool>? permissions;
-      if (_selectedRole == AppConstants.roleAdmin) {
-        // Create an empty, but non-null, permissions map for new Admins.
-        // The Super Admin will grant specific permissions later on the permissions page.
-        permissions = {};
-      }
-      // For regular employees, permissions remain null as their access is determined by their role.
-
-      final result = await authService.createEmployee(
-        firstName: _firstNameController.text.trim(),
-        middleName: _middleNameController.text.trim().isEmpty
-            ? null
-            : _middleNameController.text.trim(),
-        surname: _surnameController.text.trim(),
-        phone: _phoneController.text.trim(),
-        email: _emailController.text.trim(),
-        username: _usernameController.text.trim(),
-        password: _passwordController.text,
-        role: _selectedRole,
-        locationId: locationIdValue,
-        permissions: permissions, // Pass the new permissions map
+    if (mounted) {
+      Fluttertoast.showToast(
+        msg: result.message,
+        gravity: ToastGravity.TOP,
+        backgroundColor: result.success ? AppTheme.success : AppTheme.error,
+        textColor: Colors.white,
+        fontSize: 16.0
       );
 
-      if (mounted) {
-        if (result.success) {
-          ToastUtils.showSuccess(result.message);
-          widget.onEmployeeAdded();
-          Navigator.of(context).pop();
-        } else {
-          ToastUtils.showError(result.message);
-        }
+      if (result.success) {
+        widget.onEmployeeAdded();
+        Navigator.of(context).pop();
       }
-    } catch (e) {
-      if (mounted) {
-        ToastUtils.showError('Failed to create employee: ${e.toString()}');
-      }
-    } finally {
-      setState(() => _isSaving = false);
     }
   }
 
@@ -158,10 +156,10 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
     final screenHeight = MediaQuery.of(context).size.height;
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenHeight < 600;
-
+    
     final dialogWidth = screenWidth > 600 ? 600.0 : screenWidth * 0.9;
     final maxDialogHeight = screenHeight * 0.9;
-
+    
     return Dialog(
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       child: Container(
@@ -184,11 +182,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.person_add,
-                    color: AppTheme.primaryWhite,
-                    size: 20,
-                  ),
+                  const Icon(Icons.person_add, color: AppTheme.primaryWhite, size: 20),
                   const SizedBox(width: 8),
                   Text(
                     'Add Employee',
@@ -200,11 +194,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                   ),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(
-                      Icons.close,
-                      color: AppTheme.primaryWhite,
-                      size: 20,
-                    ),
+                    icon: const Icon(Icons.close, color: AppTheme.primaryWhite, size: 20),
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(),
                     onPressed: () => Navigator.of(context).pop(),
@@ -212,7 +202,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                 ],
               ),
             ),
-
+            
             Flexible(
               child: SingleChildScrollView(
                 padding: EdgeInsets.all(isSmallScreen ? 16 : 24),
@@ -226,10 +216,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                         decoration: const InputDecoration(
                           labelText: 'Role',
                           prefixIcon: Icon(Icons.admin_panel_settings),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         items: const [
                           DropdownMenuItem(
@@ -259,7 +246,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                         },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       if (_selectedRole == AppConstants.roleAdmin) ...[
                         Container(
                           decoration: BoxDecoration(
@@ -272,11 +259,7 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                             children: [
                               Row(
                                 children: const [
-                                  Icon(
-                                    Icons.location_on,
-                                    size: 20,
-                                    color: AppTheme.darkGray,
-                                  ),
+                                  Icon(Icons.location_on, size: 20, color: AppTheme.darkGray),
                                   SizedBox(width: 8),
                                   Text(
                                     'Assigned Locations (Select multiple)',
@@ -289,15 +272,11 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                               ),
                               const SizedBox(height: 8),
                               ..._locations.map((location) {
-                                final displayText =
-                                    location.address != null &&
-                                        location.address!.isNotEmpty
+                                final displayText = location.address != null && location.address!.isNotEmpty
                                     ? '${location.name} - ${location.address}'
                                     : location.name;
-                                final isSelected = _selectedLocations.any(
-                                  (l) => l.id == location.id,
-                                );
-
+                                final isSelected = _selectedLocations.any((l) => l.id == location.id);
+                                
                                 return CheckboxListTile(
                                   dense: true,
                                   contentPadding: EdgeInsets.zero,
@@ -311,14 +290,11 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                                       if (checked == true) {
                                         _selectedLocations.add(location);
                                       } else {
-                                        _selectedLocations.removeWhere(
-                                          (l) => l.id == location.id,
-                                        );
+                                        _selectedLocations.removeWhere((l) => l.id == location.id);
                                       }
                                     });
                                   },
-                                  controlAffinity:
-                                      ListTileControlAffinity.leading,
+                                  controlAffinity: ListTileControlAffinity.leading,
                                 );
                               }).toList(),
                             ],
@@ -330,16 +306,11 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                           decoration: const InputDecoration(
                             labelText: 'Location/Address',
                             prefixIcon: Icon(Icons.location_on),
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 16,
-                            ),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                           ),
                           isExpanded: true,
                           items: _locations.map((location) {
-                            final displayText =
-                                location.address != null &&
-                                    location.address!.isNotEmpty
+                            final displayText = location.address != null && location.address!.isNotEmpty
                                 ? location.address!
                                 : location.name;
                             return DropdownMenuItem(
@@ -360,22 +331,17 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                             return null;
                           },
                         ),
-
+                        
                         if (_selectedLocation != null)
                           Padding(
-                            padding: EdgeInsets.only(
-                              top: isSmallScreen ? 8 : 12,
-                            ),
+                            padding: EdgeInsets.only(top: isSmallScreen ? 8 : 12),
                             child: TextFormField(
                               key: ValueKey(_selectedLocation!.id),
                               initialValue: _selectedLocation!.name,
                               decoration: const InputDecoration(
                                 labelText: 'Shop Name',
                                 prefixIcon: Icon(Icons.store),
-                                contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 16,
-                                ),
+                                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                                 filled: true,
                                 fillColor: Color(0xFFF5F5F5),
                               ),
@@ -386,16 +352,13 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                           ),
                       ],
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _firstNameController,
                         decoration: const InputDecoration(
                           labelText: 'First Name',
                           prefixIcon: Icon(Icons.person),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
@@ -405,29 +368,23 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                         },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _middleNameController,
                         decoration: const InputDecoration(
                           labelText: 'Middle Name (Optional)',
                           prefixIcon: Icon(Icons.person_outline),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _surnameController,
                         decoration: const InputDecoration(
                           labelText: 'Surname',
                           prefixIcon: Icon(Icons.person),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
@@ -437,46 +394,50 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                         },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _phoneController,
                         decoration: const InputDecoration(
                           labelText: 'Phone Number',
                           prefixIcon: Icon(Icons.phone),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         keyboardType: TextInputType.phone,
-                        validator: ValidationUtils.validatePhone,
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Phone number is required';
+                          }
+                          return null;
+                        },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _emailController,
                         decoration: const InputDecoration(
                           labelText: 'Email',
                           prefixIcon: Icon(Icons.email),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         keyboardType: TextInputType.emailAddress,
-                        validator: ValidationUtils.validateEmail,
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Email is required';
+                          }
+                          if (!value.contains('@')) {
+                            return 'Please enter a valid email';
+                          }
+                          return null;
+                        },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _usernameController,
                         decoration: const InputDecoration(
                           labelText: 'Username',
                           prefixIcon: Icon(Icons.account_circle),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                         ),
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
@@ -486,21 +447,16 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                         },
                       ),
                       SizedBox(height: isSmallScreen ? 12 : 16),
-
+                      
                       TextFormField(
                         controller: _passwordController,
                         decoration: InputDecoration(
                           labelText: 'Password',
                           prefixIcon: const Icon(Icons.lock),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 16,
-                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
                           suffixIcon: IconButton(
                             icon: Icon(
-                              _obscurePassword
-                                  ? Icons.visibility_off
-                                  : Icons.visibility,
+                              _obscurePassword ? Icons.visibility_off : Icons.visibility,
                               color: AppTheme.darkGray,
                             ),
                             onPressed: () {
@@ -526,12 +482,14 @@ class _AddEmployeeDialogState extends State<AddEmployeeDialog> {
                 ),
               ),
             ),
-
+            
             Container(
               padding: EdgeInsets.all(isSmallScreen ? 12 : 16),
               decoration: BoxDecoration(
                 color: Colors.white,
-                border: Border(top: BorderSide(color: AppTheme.mediumGray)),
+                border: Border(
+                  top: BorderSide(color: AppTheme.mediumGray),
+                ),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.end,
